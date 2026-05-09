@@ -378,7 +378,14 @@ def chat(sid):
         try:
             dq=a.put_task(send_prompt, source='user', images=image_blocks)
             while True:
-                item=dq.get(timeout=300)
+                try:
+                    item=dq.get(timeout=30)
+                except queue.Empty:
+                    _set_run(sid, running=True, text=full, updated_at=int(time.time()), error=False)
+                    emit({'type':'heartbeat','text': full})
+                    continue
+                if not isinstance(item, dict):
+                    continue
                 if 'next' in item:
                     chunk = item.get('next') or ''
                     # Normal path: a.inc_out=True makes `next` an incremental chunk.
