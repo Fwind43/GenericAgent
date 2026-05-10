@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState, useCallback} from 'react';
 import { createRoot } from 'react-dom/client';
 import { Send, Paperclip, Image as ImageIcon, Square, Plus, Trash2, Settings2, Bot, User, ChevronDown, Copy, Check } from 'lucide-react';
 import { marked } from 'marked';
@@ -181,8 +181,12 @@ function Message({m}){
 function SettingsPanel({state}){
   return <section className="panel compact-status"><div className="backend">{state.backend?.name || state.backend?.class || 'backend'} · LLM {state.llm_no ?? 0}</div></section>
 }
-function Composer({onSend,busy,onAbort,state,settings,updateSetting}){
-  const [text,setText]=useState(''); const [files,setFiles]=useState([]); const [sending,setSending]=useState(false); const ta=useRef(null);
+function Composer({onSend,busy,sending,onAbort,state,settings,updateSetting}){
+  const [text,setText]=useState(''); const [files,setFiles]=useState([]); const ta=useRef(null); const filesRef=useRef([]);
+  const revokePreview=useCallback(f=>{ if(f?.preview) URL.revokeObjectURL(f.preview); },[]);
+  const removeFile=useCallback(id=>setFiles(x=>{ const target=x.find(f=>f.id===id); revokePreview(target); return x.filter(f=>f.id!==id); }),[revokePreview]);
+  useEffect(()=>{ filesRef.current=files; },[files]);
+  useEffect(()=>()=>{ filesRef.current.forEach(revokePreview); },[revokePreview]);
   const addFiles=fs=>setFiles(x=>[...x,...Array.from(fs||[]).map(f=>({id:uid(), file:f, name:f.name, type:f.type, preview:f.type.startsWith('image/')?URL.createObjectURL(f):''}))]);
   async function send(){
     if(busy || sending || (!text.trim() && !files.length)) return;
@@ -190,17 +194,16 @@ function Composer({onSend,busy,onAbort,state,settings,updateSetting}){
     const picked=files;
     setText('');
     setFiles([]);
-    setSending(true);
     try{
       await onSend(prompt,picked.map(f=>({name:f.name,type:f.type,preview:f.preview,file:f.file})));
     }catch(e){
       console.error(e);
-    }finally{
-      setSending(false);
+      setText(prompt);
+      setFiles(picked);
     }
   }
   return <div className="composer" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault(); addFiles(e.dataTransfer.files)}}>
-    {files.length?<div className="chips">{files.map(f=><button key={f.id} onClick={()=>setFiles(x=>x.filter(y=>y.id!==f.id))}>{f.preview?<img src={f.preview}/>:<Paperclip size={14}/>} {f.name} ×</button>)}</div>:null}
+    {files.length?<div className="chips">{files.map(f=><button key={f.id} onClick={()=>removeFile(f.id)}>{f.preview?<img src={f.preview}/>:<Paperclip size={14}/>} {f.name} ×</button>)}</div>:null}
     <div className="inputbar"><label className="iconbtn"><Paperclip size={19}/><input type="file" multiple hidden onChange={e=>addFiles(e.target.files)}/></label><textarea ref={ta} value={text} onChange={e=>setText(e.target.value)} onPaste={e=>{const fs=[...e.clipboardData.files]; if(fs.length) addFiles(fs)}} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}} placeholder="输入消息，支持粘贴图片/拖拽文件。Enter 发送，Shift+Enter 换行。" />{busy?<button className="stop" onClick={onAbort}><Square size={16}/></button>:<button className="send" onClick={send} disabled={sending}><Send size={17}/></button>}</div>
     <div className="composer-settings bottom-settings">
       <div className="settings-head"><span className="status-dot"/>模型</div>
@@ -209,10 +212,12 @@ function Composer({onSend,busy,onAbort,state,settings,updateSetting}){
   </div>
 }
 function App(){
-  const [sid,setSid]=useState(localStorage.gaReactSid||''); const [sessions,setSessions]=useState([]); const [messages,setMessages]=useState([]); const [runningBySid,setRunningBySid]=useState({}); const [state,setState]=useState({}); const [settings,setSettings]=useState(defaultSettings); const [follow,setFollow]=useState(true); const bottom=useRef(null); const chatRef=useRef(null); const sidRef=useRef(sid);
+  const [sid,setSid]=useState(localStorage.gaReactSid||''); const [sessions,setSessions]=useState([]); const [messages,setMessages]=useState([]); const [runningBySid,setRunningBySid]=useState({}); const [sendingBySid,setSendingBySid]=useState({}); const [state,setState]=useState({}); const [settings,setSettings]=useState(defaultSettings); const [follow,setFollow]=useState(true); const bottom=useRef(null); const chatRef=useRef(null); const sidRef=useRef(sid);
   const activeBusy=!!(sid && runningBySid[sid]);
+  const activeSending=!!(sid && sendingBySid[sid]);
   useEffect(()=>{ sidRef.current=sid; },[sid]);
   const setSessionRunning=(id,running)=>{ if(!id) return; setRunningBySid(m=>({...m,[id]:!!running})); };
+  const setSessionSending=(id,sending)=>{ if(!id) return; setSendingBySid(m=>({...m,[id]:!!sending})); };
   const refreshSessions=()=>jfetch('/api/sessions').then(d=>setSessions(d.sessions||[])).catch(console.error);
   function hydrateRun(baseMessages, run){
     let next=[...(baseMessages||[])].filter(x=>x.id!=='live');
@@ -255,7 +260,13 @@ function App(){
   }
   useEffect(()=>{ if(follow) scrollToBottom('smooth'); },[messages,activeBusy,follow]);
   async function newChat(){ const d=await jfetch('/api/session/new',{method:'POST'}); await load(d.id); refreshSessions(); }
-  async function del(id){ await fetch('/api/session/'+id,{method:'DELETE'}); if(id===sid) await newChat(); refreshSessions(); }
+  async function del(id){
+    const target=sessions.find(s=>s.id===id);
+    if(!confirm(`确定删除会话“${target?.title||id}”吗？此操作不可恢复。`)) return;
+    await fetch('/api/session/'+id,{method:'DELETE'});
+    if(id===sid) await newChat();
+    refreshSessions();
+  }
   async function updateSetting(patch){
     const next=cleanSettings({...settings,...patch});
     setSettings(next);
@@ -265,6 +276,7 @@ function App(){
   }
   async function send(prompt,files){
     const id=await ensure();
+    setSessionSending(id,true);
     const payloadSettings=cleanSettings(settings);
     const userMsg={id:uid(),role:'user',content:prompt,files:(files||[]).map(f=>({name:f.name,type:f.type,mime:f.type,isImage:(f.type||'').startsWith('image/'),url:f.preview||''})),created_at:Date.now()/1000};
     setSettings(payloadSettings);
@@ -301,12 +313,13 @@ function App(){
       const msg={id:uid(),role:'assistant',content:`发送失败：${e?.message||e}\n\n如果是大图，请先压缩后重试；如果当前模型不支持视觉，请切换到支持图片的模型。`,created_at:Date.now()/1000};
       if(sidRef.current===id) setMessages(m=>m.filter(x=>x.id!=='live').concat(msg));
     }finally{
+      setSessionSending(id,false);
       setSessionRunning(id,false);
       refreshSessions();
     }
   }
   async function abort(){ if(sid) await jfetch('/api/abort/'+sid,{method:'POST'}); setSessionRunning(sid,false); }
-  return <div className="app"><aside><div className="brand"><Bot/> <b>GeneraticAgent</b></div><button className="new" onClick={newChat}><Plus size={16}/> 新会话</button><div className="session-list">{sessions.map(s=><div className={'session '+(s.id===sid?'active':'')} key={s.id}><button onClick={()=>load(s.id)}><b>{s.title}</b><span>{fmtTime(s.updated_at)} · {s.count}条</span></button><button className="trash" onClick={()=>del(s.id)}><Trash2 size={14}/></button></div>)}</div><SettingsPanel state={state}/></aside><main><header><h1>GA Chat</h1><p>独立 React 前端 · 会话持久化 · 图片/文件 · 模型切换</p></header><div className="chat-wrap"><div className="chat" ref={chatRef} onScroll={onChatScroll}>{messages.length?messages.map(m=><Message key={m.id} m={m}/>):<div className="empty"><ImageIcon/>开始一个新对话，可直接粘贴图片。</div>}<div ref={bottom}/></div>{!follow?<button className="follow-btn" onClick={()=>{setFollow(true); scrollToBottom('smooth')}}>↓ 返回跟随</button>:null}</div><Composer onSend={send} busy={activeBusy} onAbort={abort} state={state} settings={settings} updateSetting={updateSetting}/></main></div>
+  return <div className="app"><aside><div className="brand"><Bot/> <b>GeneraticAgent</b></div><button className="new" onClick={newChat}><Plus size={16}/> 新会话</button><div className="session-list">{sessions.map(s=>{ const isRunning=!!runningBySid[s.id]; return <div className={'session '+(s.id===sid?'active ':'')+(isRunning?'running':'')} key={s.id}><button onClick={()=>load(s.id)}><b>{isRunning?<span className="session-run-dot" title="运行中"/>:null}{s.title}</b><span>{fmtTime(s.updated_at)} · {s.count}条{isRunning?' · 运行中':''}</span></button><button className="trash" onClick={()=>del(s.id)}><Trash2 size={14}/></button></div>})}</div><SettingsPanel state={state}/></aside><main><header><h1>GA Chat</h1><p>独立 React 前端 · 会话持久化 · 图片/文件 · 模型切换</p></header><div className="chat-wrap"><div className="chat" ref={chatRef} onScroll={onChatScroll}>{messages.length?messages.map(m=><Message key={m.id} m={m}/>):<div className="empty"><ImageIcon/>开始一个新对话，可直接粘贴图片。</div>}<div ref={bottom}/></div>{!follow?<button className="follow-btn" onClick={()=>{setFollow(true); scrollToBottom('smooth')}}>↓ 返回跟随</button>:null}</div><Composer onSend={send} busy={activeBusy} sending={activeSending} onAbort={abort} state={state} settings={settings} updateSetting={updateSetting}/></main></div>
 }
 
 createRoot(document.getElementById('root')).render(<App/>);

@@ -25,3 +25,6 @@
 
 /* smart chat follow */
 .chat-wrap{position:relative;min-height:0;overflow:hidden}.chat-wrap .chat{height:100%;min-height:0}.follow-btn{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);border:1px solid #c9e8df;background:rgba(255,255,255,.94);color:#08765d;border-radius:999px;padding:8px 13px;font-size:13px;font-weight:800;box-shadow:0 10px 30px rgba(15,23,42,.14);cursor:pointer;backdrop-filter:blur(10px);z-index:3}.follow-btn:hover{background:#ecfdf5;border-color:#99f6e4;transform:translateX(-50%) translateY(-1px)}
+.session.running{border-color:#b7eadf;background:linear-gradient(135deg,#ffffff,#ecfdf5)}
+.session.running button:first-child b{display:flex;align-items:center;gap:7px}
+.session-run-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(16,163,127,.13);display:inline-block;animation:pulse 1.4s infinite}
