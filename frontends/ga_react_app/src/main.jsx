@@ -1,6 +1,6 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import { createRoot } from 'react-dom/client';
-import { Send, Paperclip, Image as ImageIcon, Square, Plus, Trash2, Settings2, Bot, User, ChevronDown } from 'lucide-react';
+import { Send, Paperclip, Image as ImageIcon, Square, Plus, Trash2, Settings2, Bot, User, ChevronDown, Copy, Check } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import './styles.css';
@@ -15,6 +15,36 @@ function cleanSettings(settings){
 
 marked.setOptions({breaks: true, gfm: true});
 function md(text){ return {__html: DOMPurify.sanitize(marked.parse(text || ''))}; }
+function MarkdownBlock({text}){
+  const ref=useRef(null);
+  const raw=text || '';
+  useEffect(()=>{
+    const root=ref.current;
+    if(!root) return;
+    root.querySelectorAll('pre').forEach(pre=>{
+      const code=pre.querySelector('code.language-text');
+      if(!code || pre.querySelector(':scope > button.copy-code')) return;
+      pre.classList.add('copyable-code');
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='copy-code';
+      btn.textContent='复制';
+      btn.title='复制代码';
+      btn.addEventListener('click', async ()=>{
+        try{
+          await navigator.clipboard.writeText(code.textContent || '');
+          btn.textContent='已复制';
+          btn.classList.add('copied');
+          setTimeout(()=>{ btn.textContent='复制'; btn.classList.remove('copied'); }, 1400);
+        }catch(e){
+          console.error(e);
+        }
+      });
+      pre.appendChild(btn);
+    });
+  },[raw]);
+  return <div className="md" ref={ref} dangerouslySetInnerHTML={md(raw)} />;
+}
 function fmtTime(ts){ if(!ts) return ''; return new Date(ts*1000).toLocaleString(); }
 async function jfetch(url, opts){ const r=await fetch(API+url, opts); if(!r.ok) throw new Error(await r.text()); return await r.json(); }
 async function fileToDataUrl(file){ return await new Promise((res,rej)=>{const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file);}); }
@@ -98,11 +128,11 @@ function RoundCard({group, open=false, running=false}){
   const summary=group.items.find(x=>x.type==='summary')?.text || '本轮过程';
   return <details className={'round-card '+(running?'is-running':'is-complete')} open={open}>
     <summary><span className="run-dot"/><b>第 {group.turn} 轮</b><em>{summary}</em></summary>
-    <div className="round-body">{group.items.map((p,i)=>p.type==='tool'? <ToolCard key={i} part={p}/> : p.type==='wait'? <div key={i} className="waiting-card"><span className="pulse-dot"/>等待你的回答…</div> : p.type==='md' && (p.text||'').trim()? <div key={i} className="md" dangerouslySetInnerHTML={md(p.text)} /> : null)}</div>
+    <div className="round-body">{group.items.map((p,i)=>p.type==='tool'? <ToolCard key={i} part={p}/> : p.type==='wait'? <div key={i} className="waiting-card"><span className="pulse-dot"/>等待你的回答…</div> : p.type==='md' && (p.text||'').trim()? <MarkdownBlock key={i} text={p.text}/> : null)}</div>
   </details>;
 }
 function RoundInline({group}){
-  return <div className="round-inline">{group.items.map((p,i)=>p.type==='tool'? <ToolCard key={i} part={p}/> : p.type==='wait'? <div key={i} className="waiting-card"><span className="pulse-dot"/>等待你的回答…</div> : p.type==='md' && (p.text||'').trim()? <div key={i} className="md" dangerouslySetInnerHTML={md(p.text)} /> : null)}</div>;
+  return <div className="round-inline">{group.items.map((p,i)=>p.type==='tool'? <ToolCard key={i} part={p}/> : p.type==='wait'? <div key={i} className="waiting-card"><span className="pulse-dot"/>等待你的回答…</div> : p.type==='md' && (p.text||'').trim()? <MarkdownBlock key={i} text={p.text}/> : null)}</div>;
 }
 function ToolCard({part}){
   const data=tryToolJson(part.raw); const isAsk=part.name==='ask_user'; const title=isAsk?'需要你选择 / 回答':part.name;
@@ -117,7 +147,7 @@ function ToolCard({part}){
 function AssistantBody({text, live=false}){
   const parts=groupRounds(normalizeParts(splitAssistant(text)));
   const lastRound=[...parts].map((p,i)=>p.type==='round'?i:-1).filter(i=>i>=0).pop();
-  return <>{parts.map((p,i)=> p.type==='round'? (i===lastRound ? <RoundInline key={i} group={p.group}/> : <RoundCard key={i} group={p.group} running={false}/>) : p.type==='tool'? <ToolCard key={i} part={p}/> : p.type==='wait'? <div key={i} className="waiting-card"><span className="pulse-dot"/>等待你的回答…</div> : p.type==='summary'? <div key={i} className="summary-card"><span>摘要</span>{p.text}</div> : <div key={i} className="md" dangerouslySetInnerHTML={md(p.text)} />)}</>;
+  return <>{parts.map((p,i)=> p.type==='round'? (i===lastRound ? <RoundInline key={i} group={p.group}/> : <RoundCard key={i} group={p.group} running={false}/>) : p.type==='tool'? <ToolCard key={i} part={p}/> : p.type==='wait'? <div key={i} className="waiting-card"><span className="pulse-dot"/>等待你的回答…</div> : p.type==='summary'? <div key={i} className="summary-card"><span>摘要</span>{p.text}</div> : <MarkdownBlock key={i} text={p.text}/>)}</>;
 }
 
 function fileMeta(f){
@@ -144,7 +174,7 @@ function Message({m}){
     <div className="avatar">{user?<User size={16}/>:<Bot size={17}/>}</div>
     <div className="bubble">
       <AttachmentList files={m.files}/>
-      {user ? <div className="md" dangerouslySetInnerHTML={md(m.content)} /> : <AssistantBody text={m.content} live={m.id==='live'}/>}
+      {user ? <MarkdownBlock text={m.content}/> : <AssistantBody text={m.content} live={m.id==='live'}/>}
     </div>
   </div>
 }
