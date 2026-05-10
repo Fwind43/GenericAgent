@@ -209,7 +209,10 @@ function Composer({onSend,busy,onAbort,state,settings,updateSetting}){
   </div>
 }
 function App(){
-  const [sid,setSid]=useState(localStorage.gaReactSid||''); const [sessions,setSessions]=useState([]); const [messages,setMessages]=useState([]); const [busy,setBusy]=useState(false); const [state,setState]=useState({}); const [settings,setSettings]=useState(defaultSettings); const [follow,setFollow]=useState(true); const bottom=useRef(null); const chatRef=useRef(null);
+  const [sid,setSid]=useState(localStorage.gaReactSid||''); const [sessions,setSessions]=useState([]); const [messages,setMessages]=useState([]); const [runningBySid,setRunningBySid]=useState({}); const [state,setState]=useState({}); const [settings,setSettings]=useState(defaultSettings); const [follow,setFollow]=useState(true); const bottom=useRef(null); const chatRef=useRef(null); const sidRef=useRef(sid);
+  const activeBusy=!!(sid && runningBySid[sid]);
+  useEffect(()=>{ sidRef.current=sid; },[sid]);
+  const setSessionRunning=(id,running)=>{ if(!id) return; setRunningBySid(m=>({...m,[id]:!!running})); };
   const refreshSessions=()=>jfetch('/api/sessions').then(d=>setSessions(d.sessions||[])).catch(console.error);
   function hydrateRun(baseMessages, run){
     let next=[...(baseMessages||[])].filter(x=>x.id!=='live');
@@ -224,20 +227,25 @@ function App(){
     try{
       const d=await jfetch('/api/run/'+id);
       const run=d.run;
-      if(!run){ setBusy(false); await load(id, false); refreshSessions(); return false; }
-      setBusy(!!run.running);
-      setMessages(m=>hydrateRun(m, run));
+      if(!run){
+        setSessionRunning(id,false);
+        if(sidRef.current===id) await load(id, false);
+        refreshSessions();
+        return false;
+      }
+      setSessionRunning(id,!!run.running);
+      if(sidRef.current===id) setMessages(m=>hydrateRun(m, run));
       return !!run.running;
     }catch(e){ console.error(e); return false; }
   }
-  async function ensure(){ let id=sid; if(!id){ const d=await jfetch('/api/session/new',{method:'POST'}); id=d.id; localStorage.gaReactSid=id; setSid(id);} return id; }
-  async function load(id, startPoll=true){ localStorage.gaReactSid=id; setSid(id); const d=await jfetch('/api/session/'+id); const sessionSettings=cleanSettings(d.settings||{}); setSettings(sessionSettings); setMessages(hydrateRun(d.messages||[], d.run)); setBusy(!!d.run?.running); if(startPoll && d.run?.running) pollRun(id); jfetch('/api/state/'+id).then(s=>{setState(s); if(s.settings) setSettings(cleanSettings(s.settings));}); }
+  async function ensure(){ let id=sidRef.current || sid; if(!id){ const d=await jfetch('/api/session/new',{method:'POST'}); id=d.id; localStorage.gaReactSid=id; sidRef.current=id; setSid(id);} return id; }
+  async function load(id, startPoll=true){ localStorage.gaReactSid=id; setSid(id); sidRef.current=id; const d=await jfetch('/api/session/'+id); if(sidRef.current!==id) return; const sessionSettings=cleanSettings(d.settings||{}); setSettings(sessionSettings); setMessages(hydrateRun(d.messages||[], d.run)); setSessionRunning(id,!!d.run?.running); if(startPoll && d.run?.running) pollRun(id); jfetch('/api/state/'+id).then(s=>{ if(sidRef.current!==id) return; setState(s); if(s.settings) setSettings(cleanSettings(s.settings));}); }
   useEffect(()=>{ensure().then(load); refreshSessions();},[]);
   useEffect(()=>{
-    if(!sid || !busy) return;
+    if(!sid || !activeBusy) return;
     const t=setInterval(()=>pollRun(sid), 1000);
     return ()=>clearInterval(t);
-  },[sid,busy]);
+  },[sid,activeBusy]);
   function isNearBottom(el){ return !el || (el.scrollHeight - el.scrollTop - el.clientHeight) < 96; }
   function scrollToBottom(behavior='smooth'){
     bottom.current?.scrollIntoView({behavior});
@@ -245,7 +253,7 @@ function App(){
   function onChatScroll(e){
     setFollow(isNearBottom(e.currentTarget));
   }
-  useEffect(()=>{ if(follow) scrollToBottom('smooth'); },[messages,busy,follow]);
+  useEffect(()=>{ if(follow) scrollToBottom('smooth'); },[messages,activeBusy,follow]);
   async function newChat(){ const d=await jfetch('/api/session/new',{method:'POST'}); await load(d.id); refreshSessions(); }
   async function del(id){ await fetch('/api/session/'+id,{method:'DELETE'}); if(id===sid) await newChat(); refreshSessions(); }
   async function updateSetting(patch){
@@ -261,12 +269,12 @@ function App(){
     const userMsg={id:uid(),role:'user',content:prompt,files:(files||[]).map(f=>({name:f.name,type:f.type,mime:f.type,isImage:(f.type||'').startsWith('image/'),url:f.preview||''})),created_at:Date.now()/1000};
     setSettings(payloadSettings);
     setFollow(true);
-    setBusy(true);
+    setSessionRunning(id,true);
     setMessages(m=>[...m,userMsg,{id:'live',role:'assistant',content:'正在处理附件…',created_at:Date.now()/1000}]);
     try{
       const payloadFiles=[];
       for(const f of files||[]){
-        setMessages(m=>m.map(x=>x.id==='live'?{...x,content:`正在处理附件：${f.name} …`}:x));
+        if(sidRef.current===id) setMessages(m=>m.map(x=>x.id==='live'?{...x,content:`正在处理附件：${f.name} …`}:x));
         payloadFiles.push(await fileToPayload(f.file));
       }
       const body = JSON.stringify({prompt,files:payloadFiles,settings:payloadSettings,client_user_id:userMsg.id});
@@ -274,7 +282,7 @@ function App(){
       if(bodyBytes > MAX_JSON_BYTES){
         throw new Error(`附件仍然过大：${(bodyBytes/1024/1024).toFixed(1)}MB，已超过 ${(MAX_JSON_BYTES/1024/1024).toFixed(0)}MB。请裁剪图片或减少文件数量。`);
       }
-      setMessages(m=>m.map(x=>x.id==='live'?{...x,content:`已压缩并上传请求（${(bodyBytes/1024/1024).toFixed(2)}MB），等待模型响应…`}:x));
+      if(sidRef.current===id) setMessages(m=>m.map(x=>x.id==='live'?{...x,content:`已压缩并上传请求（${(bodyBytes/1024/1024).toFixed(2)}MB），等待模型响应…`}:x));
       const r=await fetch('/api/chat/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body});
       if(!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       if(!r.body) throw new Error('浏览器没有返回可读取的响应流');
@@ -285,20 +293,20 @@ function App(){
         for(const line of lines){
           if(!line.trim()) continue;
           let ev; try{ ev=JSON.parse(line); }catch(e){ console.warn('bad stream line', line); continue; }
-          if(ev.type==='delta') setMessages(m=>m.map(x=>x.id==='live'?{...x,content:ev.text}:x));
-          if(ev.type==='done'||ev.type==='error') setMessages(m=>m.filter(x=>x.id!=='live').concat(ev.message));
+          if(ev.type==='delta' && sidRef.current===id) setMessages(m=>m.map(x=>x.id==='live'?{...x,content:ev.text}:x));
+          if((ev.type==='done'||ev.type==='error') && sidRef.current===id) setMessages(m=>m.filter(x=>x.id!=='live').concat(ev.message));
         }
       }
     }catch(e){
       const msg={id:uid(),role:'assistant',content:`发送失败：${e?.message||e}\n\n如果是大图，请先压缩后重试；如果当前模型不支持视觉，请切换到支持图片的模型。`,created_at:Date.now()/1000};
-      setMessages(m=>m.filter(x=>x.id!=='live').concat(msg));
+      if(sidRef.current===id) setMessages(m=>m.filter(x=>x.id!=='live').concat(msg));
     }finally{
-      setBusy(false);
+      setSessionRunning(id,false);
       refreshSessions();
     }
   }
-  async function abort(){ if(sid) await jfetch('/api/abort/'+sid,{method:'POST'}); setBusy(false); }
-  return <div className="app"><aside><div className="brand"><Bot/> <b>GeneraticAgent</b></div><button className="new" onClick={newChat}><Plus size={16}/> 新会话</button><div className="session-list">{sessions.map(s=><div className={'session '+(s.id===sid?'active':'')} key={s.id}><button onClick={()=>load(s.id)}><b>{s.title}</b><span>{fmtTime(s.updated_at)} · {s.count}条</span></button><button className="trash" onClick={()=>del(s.id)}><Trash2 size={14}/></button></div>)}</div><SettingsPanel state={state}/></aside><main><header><h1>GA Chat</h1><p>独立 React 前端 · 会话持久化 · 图片/文件 · 模型切换</p></header><div className="chat-wrap"><div className="chat" ref={chatRef} onScroll={onChatScroll}>{messages.length?messages.map(m=><Message key={m.id} m={m}/>):<div className="empty"><ImageIcon/>开始一个新对话，可直接粘贴图片。</div>}<div ref={bottom}/></div>{!follow?<button className="follow-btn" onClick={()=>{setFollow(true); scrollToBottom('smooth')}}>↓ 返回跟随</button>:null}</div><Composer onSend={send} busy={busy} onAbort={abort} state={state} settings={settings} updateSetting={updateSetting}/></main></div>
+  async function abort(){ if(sid) await jfetch('/api/abort/'+sid,{method:'POST'}); setSessionRunning(sid,false); }
+  return <div className="app"><aside><div className="brand"><Bot/> <b>GeneraticAgent</b></div><button className="new" onClick={newChat}><Plus size={16}/> 新会话</button><div className="session-list">{sessions.map(s=><div className={'session '+(s.id===sid?'active':'')} key={s.id}><button onClick={()=>load(s.id)}><b>{s.title}</b><span>{fmtTime(s.updated_at)} · {s.count}条</span></button><button className="trash" onClick={()=>del(s.id)}><Trash2 size={14}/></button></div>)}</div><SettingsPanel state={state}/></aside><main><header><h1>GA Chat</h1><p>独立 React 前端 · 会话持久化 · 图片/文件 · 模型切换</p></header><div className="chat-wrap"><div className="chat" ref={chatRef} onScroll={onChatScroll}>{messages.length?messages.map(m=><Message key={m.id} m={m}/>):<div className="empty"><ImageIcon/>开始一个新对话，可直接粘贴图片。</div>}<div ref={bottom}/></div>{!follow?<button className="follow-btn" onClick={()=>{setFollow(true); scrollToBottom('smooth')}}>↓ 返回跟随</button>:null}</div><Composer onSend={send} busy={activeBusy} onAbort={abort} state={state} settings={settings} updateSetting={updateSetting}/></main></div>
 }
 
 createRoot(document.getElementById('root')).render(<App/>);
