@@ -44,6 +44,35 @@ UPLOAD_DIR = ROOT / 'temp' / 'uploads'
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# Some Windows installations have a broken registry MIME mapping for .js
+# (mimetypes.guess_type('x.js') -> text/plain), which makes module scripts
+# fail strict MIME checks in browsers. Keep frontend asset serving independent
+# from the host registry/Python mimetypes database.
+_FRONTEND_MIME_TYPES = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.mjs': 'application/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+}
+for _suffix, _mime in _FRONTEND_MIME_TYPES.items():
+    mimetypes.add_type(_mime, _suffix)
+
+
+def _frontend_static_file(filename, root):
+    mimetype = _FRONTEND_MIME_TYPES.get(Path(filename).suffix.lower()) or True
+    return static_file(filename, root=str(root), mimetype=mimetype)
+
 _LOCK = threading.RLock()
 _AGENTS = {}
 _RUNS = {}
@@ -438,16 +467,16 @@ def get_uploaded_file(name):
 @app.get('/')
 def index():
     if (DIST_DIR/'index.html').exists():
-        return static_file('index.html', root=str(DIST_DIR))
-    return static_file('index.html', root=str(APP_DIR))
+        return _frontend_static_file('index.html', DIST_DIR)
+    return _frontend_static_file('index.html', APP_DIR)
 
 @app.get('/<path:path>')
 def static(path):
     root = DIST_DIR if DIST_DIR.exists() else APP_DIR
     target = root / path
     if target.exists() and target.is_file():
-        return static_file(path, root=str(root))
-    return static_file('index.html', root=str(root))
+        return _frontend_static_file(path, root)
+    return _frontend_static_file('index.html', root)
 
 if __name__ == '__main__':
     port=int(os.environ.get('GA_REACT_PORT','7861'))
